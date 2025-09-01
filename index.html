@@ -1,5 +1,4 @@
 <!doctype html>
-
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
@@ -63,59 +62,99 @@
   const pfAbs=v=> (isFinite(v)? ((v>=0?'+':'')+v.toFixed(2)+'%') : '–');
   const clamp=(v,min,max)=>Math.min(max,Math.max(min,v));
   // ✅ 프록시 베이스 URL (Cloudflare Workers / Vercel / Netlify 중 배포한 주소로 교체)
-  const PROXY_BASE = "https://upbitapi.didiradira.workers.dev"; // 예: https://xxxx.workers.devasync 
-function fetchKRWMarkets(){ const url = ${PROXY_BASE}/api/upbit/market-all; const res = await fetch(url, { headers: { accept: 'application/json' } }); if(!res.ok) throw new Error('마켓 목록 오류 '+res.status); const all = await res.json(); return all.filter(m=>m.market.startsWith('KRW-')); } async function fetchTickers(markets){ const url = ${PROXY_BASE}/api/upbit/ticker?markets=${encodeURIComponent(markets.join(','))}; const res = await fetch(url, { headers: { accept: 'application/json' } }); if(!res.ok) throw new Error('티커 오류 '+res.status); return res.json(); } function percentile(arr,val){ const vals=arr.filter(x=>Number.isFinite(x)).slice().sort((a,b)=>a-b); if(!vals.length) return 0; let lo=0,hi=vals.length; while(lo<hi){const m=(lo+hi)>>1; if(vals[m]<=val) lo=m+1; else hi=m;} return lo/vals.length; }
+  const PROXY_BASE = "https://upbitapi.didiradira.workers.dev"; // 예: https://xxxx.workers.dev
 
-async function run(){ try{ setStatus(true,'Upbit 데이터 불러오는 중…'); const markets=await fetchKRWMarkets(); const codes=markets.map(m=>m.market); const chunks=[]; for(let i=0;i<codes.length;i+=100){chunks.push(codes.slice(i,i+100));} let rows=[]; for(const part of chunks){ const tks=await fetchTickers(part); rows=rows.concat(tks.map(t=>{ const meta=markets.find(m=>m.market===t.market)||{}; const proxHigh=(t.high_price&&t.low_price&&t.trade_price)?((t.trade_price-t.low_price)/Math.max(1e-9,(t.high_price-t.low_price))):0; const volatility=(t.high_price&&t.low_price&&t.trade_price)?((t.high_price-t.low_price)/Math.max(1e-9,t.trade_price)):0; return { market:t.market, name_kr:meta.korean_name||t.market, price:t.trade_price, change_rate:t.signed_change_rate||0, vol24:t.acc_trade_price_24h||0, proxHigh, volatility }; })); }
+  async function fetchKRWMarkets(){
+    const url = `${PROXY_BASE}/api/upbit/market-all`;
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    if(!res.ok) throw new Error('마켓 목록 오류 '+res.status);
+    const all = await res.json();
+    return all.filter(m=>m.market.startsWith('KRW-'));
+  }
+  async function fetchTickers(markets){
+    const url = `${PROXY_BASE}/api/upbit/ticker?markets=${encodeURIComponent(markets.join(','))}`;
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    if(!res.ok) throw new Error('티커 오류 '+res.status);
+    return res.json();
+  }
+  function percentile(arr,val){ const vals=arr.filter(x=>Number.isFinite(x)).slice().sort((a,b)=>a-b); if(!vals.length) return 0; let lo=0,hi=vals.length; while(lo<hi){const m=(lo+hi)>>1; if(vals[m]<=val) lo=m+1; else hi=m;} return lo/vals.length; }
 
-const arrChange=rows.map(r=>r.change_rate);
-  const arrHigh=rows.map(r=>r.proxHigh);
-  const arrLiq=rows.map(r=>r.vol24);
-  const arrVol=rows.map(r=>r.volatility);
+  async function run(){
+    try{
+      setStatus(true,'Upbit 데이터 불러오는 중…');
+      const markets=await fetchKRWMarkets();
+      const codes=markets.map(m=>m.market);
+      const chunks=[]; for(let i=0;i<codes.length;i+=100){chunks.push(codes.slice(i,i+100));}
+      let rows=[];
+      for(const part of chunks){
+        const tks=await fetchTickers(part);
+        rows=rows.concat(tks.map(t=>{
+          const meta=markets.find(m=>m.market===t.market)||{};
+          const proxHigh=(t.high_price&&t.low_price&&t.trade_price)?((t.trade_price-t.low_price)/Math.max(1e-9,(t.high_price-t.low_price))):0;
+          const volatility=(t.high_price&&t.low_price&&t.trade_price)?((t.high_price-t.low_price)/Math.max(1e-9,t.trade_price)):0;
+          return {
+            market:t.market,
+            name_kr:meta.korean_name||t.market,
+            price:t.trade_price,
+            change_rate:t.signed_change_rate||0,
+            vol24:t.acc_trade_price_24h||0,
+            proxHigh, volatility
+          };
+        }));
+      }
 
-  rows=rows.map(r=>{
-    const pC=percentile(arrChange,r.change_rate);
-    const pH=percentile(arrHigh,r.proxHigh);
-    const pL=percentile(arrLiq,r.vol24);
-    const pV=percentile(arrVol,r.volatility);
-    const score=0.5*pC+0.2*pH+0.25*pL+0.1*(1-pV);
-    const expectedPct=clamp((score-0.5)*20,-15,15);
-    return {...r, expectedPct};
-  })
-  .sort((a,b)=>b.expectedPct-a.expectedPct)
-  .slice(0,10);
+      const arrChange=rows.map(r=>r.change_rate);
+      const arrHigh=rows.map(r=>r.proxHigh);
+      const arrLiq=rows.map(r=>r.vol24);
+      const arrVol=rows.map(r=>r.volatility);
 
-  $cards.innerHTML=rows.map((r,i)=>{
-    const cls24=(r.change_rate||0)>=0?'good':'bad';
-    const bar=clamp(((r.expectedPct+15)/30)*100,0,100).toFixed(1);
-    return `<div class="card">
-      <div class="coin-header">
-        <div class="coin-info">
-          <img src="https://static.upbit.com/logos/${r.market.replace('KRW-','')}.png" onerror="this.style.display='none'" alt="${r.market}">
-          <div>
-            <div class="coin-name">${r.name_kr}</div>
-            <div class="coin-symbol">${r.market}</div>
+      rows=rows.map(r=>{
+        const pC=percentile(arrChange,r.change_rate);
+        const pH=percentile(arrHigh,r.proxHigh);
+        const pL=percentile(arrLiq,r.vol24);
+        const pV=percentile(arrVol,r.volatility);
+        const score=0.5*pC+0.2*pH+0.25*pL+0.1*(1-pV);
+        const expectedPct=clamp((score-0.5)*20,-15,15);
+        return {...r, expectedPct};
+      })
+      .sort((a,b)=>b.expectedPct-a.expectedPct)
+      .slice(0,10);
+
+      $cards.innerHTML=rows.map((r,i)=>{
+        const cls24=(r.change_rate||0)>=0?'good':'bad';
+        const bar=clamp(((r.expectedPct+15)/30)*100,0,100).toFixed(1);
+        return `<div class="card">
+          <div class="coin-header">
+            <div class="coin-info">
+              <img src="https://static.upbit.com/logos/${r.market.replace('KRW-','')}.png" onerror="this.style.display='none'" alt="${r.market}">
+              <div>
+                <div class="coin-name">${r.name_kr}</div>
+                <div class="coin-symbol">${r.market}</div>
+              </div>
+            </div>
+            <div class="rank">#${i+1}</div>
           </div>
-        </div>
-        <div class="rank">#${i+1}</div>
-      </div>
-      <div class="stat"><span>가격</span><span>${nfKRW(r.price)}</span></div>
-      <div class="stat"><span>24h 변화</span><span class="chip ${cls24}">${pf(r.change_rate)}</span></div>
-      <div class="stat"><span>24h 거래대금</span><span>${nfKRW(r.vol24)}</span></div>
-      <div class="stat"><span>고가 근접도</span><span>${(r.proxHigh*100).toFixed(0)}%</span></div>
-      <div class="stat"><span>예상 수익률</span><span>${pfAbs(r.expectedPct)}</span></div>
-      <div class="scorebar"><i style="width:${bar}%"></i></div>
-    </div>`;
-  }).join('');
+          <div class="stat"><span>가격</span><span>${nfKRW(r.price)}</span></div>
+          <div class="stat"><span>24h 변화</span><span class="chip ${cls24}">${pf(r.change_rate)}</span></div>
+          <div class="stat"><span>24h 거래대금</span><span>${nfKRW(r.vol24)}</span></div>
+          <div class="stat"><span>고가 근접도</span><span>${(r.proxHigh*100).toFixed(0)}%</span></div>
+          <div class="stat"><span>예상 수익률</span><span>${pfAbs(r.expectedPct)}</span></div>
+          <div class="scorebar"><i style="width:${bar}%"></i></div>
+        </div>`;
+      }).join('');
 
-  setStatus(true,'완료 · 오늘 매수 시 예상 수익률 Top 10');
-}catch(e){
-  console.error(e);
-  setStatus(false,'오류: '+e.message);
-}
+      setStatus(true,'완료 · 오늘 매수 시 예상 수익률 Top 10');
+    }catch(e){
+      console.error(e);
+      setStatus(false,'오류: '+e.message);
+    }
+  }
 
-}
-
-const today=new Date(); qs('#today').textContent=today.getFullYear()+"-"+(today.getMonth()+1).toString().padStart(2,'0')+"-"+today.getDate().toString().padStart(2,'0'); qs('#year').textContent=new Date().getFullYear(); qs('#refreshBtn').addEventListener('click', run); run(); })(); </script></body>
-
+  const today=new Date();
+  qs('#today').textContent=today.getFullYear()+"-"+(today.getMonth()+1).toString().padStart(2,'0')+"-"+today.getDate().toString().padStart(2,'0');
+  qs('#year').textContent=new Date().getFullYear();
+  qs('#refreshBtn').addEventListener('click', run);
+  run();
+})();
+</script></body>
 </html>
