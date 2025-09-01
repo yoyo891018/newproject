@@ -36,6 +36,7 @@
     .scorebar{height:10px;border-radius:6px;background:#0d1430;border:1px solid var(--border);overflow:hidden;margin-top:4px}
     .scorebar>i{display:block;height:100%;background:linear-gradient(90deg,#5f7cff,#2ae59b);width:0%}
     .muted{color:var(--muted);font-size:12px}
+    .reason{margin-top:4px;line-height:1.5}
     footer{font-size:12px;color:var(--muted);padding:14px 0 30px;text-align:center;margin-top:20px}
   </style>
 </head>
@@ -44,7 +45,7 @@
     <div class="wrap">
       <h1>요한 추천 오늘 매수 유망 코인 <span class="badge">Top 10</span></h1>
       <div class="date-today" id="today"></div>
-      <div class="sub">Upbit Open API (KRW 마켓) 데이터 기반 · 금일 매수 시 예상 수익률 Top 10</div>
+      <div class="sub">Upbit Open API (KRW 마켓) 데이터 기반 · 금일 <b>상승 확률(%)</b> Top 10</div>
       <div class="status" id="status"><span class="dot" id="dot"></span> <span id="statusText">준비</span></div>
       <button class="refresh-btn" id="refreshBtn">🔄 새로고침</button>
     </div>
@@ -52,17 +53,17 @@
   <main class="wrap">
     <div class="grid" id="cards"></div>
   </main>
-  <footer>© <span id="year"></span> — Upbit 데이터 기반 매수 유망 코인</footer><script>
+  <footer>© <span id="year"></span> — 아직도 이더리움 안산 흑두리미들 없제?</footer>
+<script>
 (async function(){
   const qs=s=>document.querySelector(s);
   const $cards=qs('#cards'); const $status=qs('#statusText'); const $dot=qs('#dot'); const $refresh=qs('#refreshBtn');
   function setStatus(ok,msg){$status.textContent=msg;$dot.className='dot '+(ok?'ok':'err');}
   const nfKRW=v=> new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(v);
   const pf=v=> (isFinite(v)? ((v>=0?'+':'')+(v*100).toFixed(2)+'%') : '–');
-  const pfAbs=v=> (isFinite(v)? ((v>=0?'+':'')+v.toFixed(2)+'%') : '–');
+  const ppct=v=> (isFinite(v)? (v.toFixed(1)+'%') : '–');
   const clamp=(v,min,max)=>Math.min(max,Math.max(min,v));
-  // ✅ 프록시 베이스 URL (Cloudflare Workers / Vercel / Netlify 중 배포한 주소로 교체)
-  const PROXY_BASE = "https://upbitapi.didiradira.workers.dev"; // 예: https://xxxx.workers.dev
+  const PROXY_BASE = "https://upbitapi.didiradira.workers.dev";
 
   async function fetchKRWMarkets(){
     const url = `${PROXY_BASE}/api/upbit/market-all`;
@@ -77,7 +78,32 @@
     if(!res.ok) throw new Error('티커 오류 '+res.status);
     return res.json();
   }
-  function percentile(arr,val){ const vals=arr.filter(x=>Number.isFinite(x)).slice().sort((a,b)=>a-b); if(!vals.length) return 0; let lo=0,hi=vals.length; while(lo<hi){const m=(lo+hi)>>1; if(vals[m]<=val) lo=m+1; else hi=m;} return lo/vals.length; }
+  function percentile(arr,val){
+    const vals=arr.filter(x=>Number.isFinite(x)).slice().sort((a,b)=>a-b);
+    if(!vals.length) return 0;
+    let lo=0,hi=vals.length;
+    while(lo<hi){const m=(lo+hi)>>1; if(vals[m]<=val) lo=m+1; else hi=m;}
+    return lo/vals.length;
+  }
+
+  // --- 상승 근거 생성기 ---
+  function buildReason(r, ctx){
+    const parts=[];
+    // 1) 거래대금 상위 (상위 20%)
+    if (ctx.pL >= 0.8) parts.push("거래대금 상위(상위 20%)로 수급 유입");
+    // 2) 당일 고가 근접/돌파 모멘텀
+    if (r.proxHigh >= 0.97 && r.change_rate > 0) parts.push("고가권 근접·양봉 흐름(돌파/안착 모멘텀)");
+    // 3) 단기 상승률 모멘텀
+    if (r.change_rate >= 0.02) parts.push(`단기 상승률 +${(r.change_rate*100).toFixed(1)}%로 모멘텀 유효`);
+    // 4) 변동성 안정(낮을수록 우상향 유리) — 하위 30%
+    if (ctx.pV <= 0.3) parts.push("변동성 안정화로 추세 우상향 유리");
+    // 5) 대체 시나리오: 거래대금↑ + 음봉 → 수급 유지 속 조정
+    if (parts.length===0 && ctx.pL>=0.8 && r.change_rate<0) parts.push("거래대금 상위 유지, 단기 조정 속 수급 지속");
+    // 6) 최소 한 줄 보장
+    if (parts.length===0) parts.push("거래대금 양호 및 기술적 반등 가능성");
+    // 상위 2~3개로 간결히
+    return `상승할 근거 : ${parts.slice(0,3).join(", ")}`;
+  }
 
   async function run(){
     try{
@@ -103,26 +129,34 @@
         }));
       }
 
+      // 전체 분포로 백분위 구해 점수 산출
       const arrChange=rows.map(r=>r.change_rate);
       const arrHigh=rows.map(r=>r.proxHigh);
       const arrLiq=rows.map(r=>r.vol24);
       const arrVol=rows.map(r=>r.volatility);
 
       rows=rows.map(r=>{
-        const pC=percentile(arrChange,r.change_rate);
-        const pH=percentile(arrHigh,r.proxHigh);
-        const pL=percentile(arrLiq,r.vol24);
-        const pV=percentile(arrVol,r.volatility);
+        const pC=percentile(arrChange,r.change_rate); // 상승률 백분위
+        const pH=percentile(arrHigh,r.proxHigh);      // 고가 근접도 백분위
+        const pL=percentile(arrLiq,r.vol24);          // 거래대금 백분위
+        const pV=percentile(arrVol,r.volatility);     // 변동성 백분위(낮을수록 좋게 반영)
+
+        // 종합 점수 → 시그모이드 확률
         const score=0.5*pC+0.2*pH+0.25*pL+0.1*(1-pV);
-        const expectedPct=clamp((score-0.5)*20,-15,15);
-        return {...r, expectedPct};
+        const k=5;
+        const riseProb = 100*(1/(1+Math.exp(-k*(score-0.5))));
+
+        // 상승 근거 생성
+        const reason = buildReason(r, {pC,pH,pL,pV});
+
+        return {...r, riseProb, reason};
       })
-      .sort((a,b)=>b.expectedPct-a.expectedPct)
+      .sort((a,b)=>b.riseProb-a.riseProb)
       .slice(0,10);
 
       $cards.innerHTML=rows.map((r,i)=>{
         const cls24=(r.change_rate||0)>=0?'good':'bad';
-        const bar=clamp(((r.expectedPct+15)/30)*100,0,100).toFixed(1);
+        const bar=clamp(r.riseProb,0,100).toFixed(1);
         return `<div class="card">
           <div class="coin-header">
             <div class="coin-info">
@@ -138,12 +172,13 @@
           <div class="stat"><span>24h 변화</span><span class="chip ${cls24}">${pf(r.change_rate)}</span></div>
           <div class="stat"><span>24h 거래대금</span><span>${nfKRW(r.vol24)}</span></div>
           <div class="stat"><span>고가 근접도</span><span>${(r.proxHigh*100).toFixed(0)}%</span></div>
-          <div class="stat"><span>예상 수익률</span><span>${pfAbs(r.expectedPct)}</span></div>
+          <div class="stat"><span>오늘 상승 확률</span><span>${ppct(r.riseProb)}</span></div>
           <div class="scorebar"><i style="width:${bar}%"></i></div>
+          <div class="muted reason">${r.reason}</div>
         </div>`;
       }).join('');
 
-      setStatus(true,'완료 · 오늘 매수 시 예상 수익률 Top 10');
+      setStatus(true,'파싱완료. 아직도 이더리움 안산 흑두루미 없제?');
     }catch(e){
       console.error(e);
       setStatus(false,'오류: '+e.message);
@@ -156,5 +191,6 @@
   qs('#refreshBtn').addEventListener('click', run);
   run();
 })();
-</script></body>
+</script>
+</body>
 </html>
